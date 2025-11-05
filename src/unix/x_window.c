@@ -8,6 +8,9 @@
 #include <X11/Xlib-xcb.h>
 
 #include <xcb/xproto.h>
+
+// NOT IMPLEMENTED/UPDATED YET
+
 typedef struct linux_handle_info {
     xcb_connection_t *connection;
     xcb_screen_t *screen;
