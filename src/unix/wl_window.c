@@ -5,7 +5,6 @@
 #include "../assert.h"
 #include "../darray.h"
 
-#include <asm-generic/socket.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
