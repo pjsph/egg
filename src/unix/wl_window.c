@@ -3,7 +3,10 @@
 #include "../window.h"
 #include "../logger.h"
 #include "../assert.h"
+#include "../darray.h"
 
+#include <asm-generic/socket.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -39,23 +42,43 @@ static const u16 wayland_wl_surface_event_preferred_buffer_scale = 2;
 static const u16 wayland_wl_surface_event_preferred_buffer_transform = 3;
 static const u16 wayland_wl_buffer_event_release = 0;
 static const u16 wayland_xdg_toplevel_event_close = 1;
-static const u16 wayland_wl_output_event_name = 4;
-static const u16 wayland_wl_surface_event_enter = 0;
+static const u16 wayland_wl_output_event_geometry = 0;
 static const u16 wayland_wl_output_event_mode = 1;
+static const u16 wayland_wl_output_event_done = 2;
+static const u16 wayland_wl_output_event_scale = 3;
+static const u16 wayland_wl_output_event_name = 4;
+static const u16 wayland_wl_output_event_description = 5;
+static const u16 wayland_wl_surface_event_enter = 0;
 static const u16 wayland_wl_buffer_destroy_opcode = 0;
 static const u16 wayland_wl_shm_pool_destroy_opcode = 1;
 static const u16 wayland_wl_display_event_delete_id = 1;
+static const u16 wayland_xdg_toplevel_destroy_opcode = 0;
+static const u16 wayland_xdg_surface_destroy_opcode = 0;
+static const u16 wayland_wl_surface_destroy_opcode = 0;
+static const u16 wayland_wl_seat_get_keyboard_opcode = 1;
+static const u16 wayland_wl_seat_event_name = 1;
+static const u16 wayland_wl_seat_event_capabilities = 0;
+static const u16 wayland_wl_keyboard_event_keymap = 0;
+static const u16 wayland_wl_keyboard_event_enter = 1;
+static const u16 wayland_wl_keyboard_event_leave = 2;
+static const u16 wayland_wl_keyboard_event_key = 3;
+static const u16 wayland_wl_keyboard_event_modifiers = 4;
+static const u16 wayland_wl_keyboard_event_repeat_info = 5;
 static const u32 wayland_format_xrgb8888 = 1;
 static const u16 wayland_header_size = 8;
 static const u32 color_channels = 4;
 
-typedef enum backend_state {
-    STATE_NONE,
-    STATE_INIT,
-    STATE_SURFACE_ACKED_CONFIGURE,
-    STATE_SURFACE_ATTACHED,
-    STATE_SHOULD_CLOSE,
-} backend_state;
+typedef enum display_state_t {
+    DISPLAY_STATE_NONE,
+    DISPLAY_STATE_INIT,
+} display_state_t;
+
+typedef enum window_state_t {
+    WINDOW_STATE_NONE,
+    WINDOW_STATE_SURFACE_ACKED_CONFIGURE,
+    WINDOW_STATE_SURFACE_ATTACHED,
+    WINDOW_STATE_SHOULD_CLOSE,
+} window_state_t;
 
 typedef struct memchunk {
     // when delete_id event is received with this object id, the memory will be freed
@@ -65,6 +88,12 @@ typedef struct memchunk {
     void *data;
     u32 size;
 } memchunk;
+
+typedef struct da_windows {
+    ewindow *items;
+    u32 count;
+    u32 capacity;
+} da_windows;
 
 typedef struct window_backend_state {
     u32 wl_surface;
@@ -83,6 +112,8 @@ typedef struct window_backend_state {
     // new state -- used on configure events
     u32 width_req;
     u32 height_req;
+
+    window_state_t state;
 } window_backend_state;
 
 typedef struct display_backend_state {
@@ -94,11 +125,15 @@ typedef struct display_backend_state {
     u32 xdg_wm_base;
     u32 wl_compositor;
     u32 wl_output;
+    u32 wl_seat;
+    u32 wl_keyboard;
+
+    da_windows windows;
 
     // old memory chunks to be freed on delete_id events
     memchunk old_memchunks[255];
 
-    backend_state state;
+    display_state_t state;
 } display_backend_state;
 
 // u32 display_backend_size = sizeof(display_backend_state);
@@ -107,6 +142,7 @@ static display_backend_state display_state;
 // RPCs
 
 static u8 wayland_wl_registry_bind(u32 name, char *interface, u32 interface_len, u32 version, u32 *state_interface);
+static u8 wayland_wl_seat_get_keyboard();
 static u8 wayland_wl_shm_create_pool(window_backend_state *backend_state);
 static u8 wayland_wl_shm_pool_create_buffer(window_backend_state *backend_state);
 static u8 wayland_wl_compositor_create_surface(window_backend_state *backend_state);
@@ -118,12 +154,20 @@ static u8 wayland_xdg_wm_base_pong(u32 ping);
 static u8 wayland_xdg_surface_ack_configure(window_backend_state *backend_state, u32 serial);
 static u8 wayland_wl_buffer_destroy(window_backend_state *backend_state);
 static u8 wayland_wl_shm_pool_destroy(window_backend_state *backend_state);
+static u8 wayland_xdg_toplevel_destroy(window_backend_state *backend_state);
+static u8 wayland_xdg_surface_destroy(window_backend_state *backend_state);
+static u8 wayland_wl_surface_destroy(window_backend_state *backend_state);
 
 //
 
+static u8 ewindow_pump(ewindow *window, u32 object_id, u16 opcode, u8 **msg, u64 *msg_len);
+static ewindow *get_window(u64 window_id);
 static u8 window_create_surface(window_backend_state *backend_state);
+static u8 window_destroy_surface(window_backend_state *backend_state);
 static u8 window_alloc_memory(u32 size, void **shm_pool_data, i32 *shm_fd);
 static u8 window_unalloc_memory(u32 size, void *shm_pool_data, i32 shm_fd);
+static u8 window_unbind_memory(window_backend_state *backend_state);
+static u8 window_render(window_backend_state *backend_state);
 
 static void write_u32(u8 *buf, u64 *buf_idx, u32 val);
 static void write_u16(u8 *buf, u64 *buf_idx, u16 val);
@@ -132,7 +176,7 @@ static void write_u16(u8 *buf, u64 *buf_idx, u16 val);
 
 u8 display_backend_init(struct display_backend_state *state) {
     // TODO: see if this works better than malloc
-    display_state = (display_backend_state) {};
+    display_state = (display_backend_state) {0};
     state = &display_state;
 
     if(!state) {
@@ -209,18 +253,27 @@ u8 display_backend_init(struct display_backend_state *state) {
 
     // pump until all interfaces are bound
     while(state->wl_shm == 0 || state->xdg_wm_base == 0 || state->wl_compositor == 0) {
-        ewindow_pump(0);
+        ewindow_pump_all();
     }
 
-    state->state = STATE_INIT;
+    darray_reserve(&display_state.windows, 2);
+
+    state->state = DISPLAY_STATE_INIT;
 
     return true;
 }
 
-u8 ewindow_create(ewindow_config *config, ewindow *window) {
-    EASSERT(display_state.state == STATE_INIT);
+u8 ewindow_create(ewindow_config *config, u64 *window_id) {
+    EASSERT(window_id != 0);
+    EASSERT(display_state.state == DISPLAY_STATE_INIT);
+
+    darray_append(&display_state.windows, (ewindow) { .id = (f64)rand() / RAND_MAX * ULLONG_MAX });
+
+    ewindow *window = &darray_last(&display_state.windows);
+    *window_id = window->id;
 
     window->backend_state = malloc(sizeof(window_backend_state));
+    memset(window->backend_state, 0, sizeof(window_backend_state));
 
     window_backend_state *backend_state = window->backend_state;
 
@@ -236,37 +289,58 @@ u8 ewindow_create(ewindow_config *config, ewindow *window) {
 
     window_create_surface(backend_state); 
 
+    // ewindow_pump_all();
+
     EDEBUG("created new window");
 
     return true; 
 }
 
-u8 ewindow_destroy(ewindow *window) {
+u8 ewindow_destroy(u64 window_id) {
+    ewindow *window = get_window(window_id);
+    EASSERT(window != NULL);
+
     window_backend_state *backend_state = window->backend_state;
 
-    window_unalloc_memory(backend_state->shm_pool_size, backend_state->shm_pool_data, backend_state->shm_fd);
+    window_unbind_memory(backend_state);
+    window_destroy_surface(backend_state);
+
     free(backend_state);
+
+    for(u32 i = 0; i < display_state.windows.count; ++i) {
+        if(&display_state.windows.items[i] == window) {
+            darray_remove(&display_state.windows, i);
+            break;
+        }
+    }
 
     EDEBUG("destroyed window");
 
     return true;
 }
 
-u8 ewindow_pump(ewindow *window) {
-    window_backend_state *backend_state;
-    if(window) {
-        backend_state = window->backend_state;
-    }
+u8 ewindow_pump_all() {
+    u8 read_buf[4096] = "";
+    u8 cmsg_buf[4096] = "";
+    struct iovec iov = { .iov_base = read_buf, .iov_len = sizeof(read_buf) };
+    struct msghdr msghdr = {
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+        .msg_control = cmsg_buf,
+        .msg_controllen = sizeof(cmsg_buf),
+    };
 
-    char read_buf[4096] = "";
-    i64 read_bytes = recv(display_state.fd, read_buf, sizeof(read_buf), 0);
+    // use recvmsg as some events contain ancillary data
+    i64 read_bytes = recvmsg(display_state.fd, &msghdr, 0);
+    // i64 read_bytes = recv(display_state.fd, read_buf, sizeof(read_buf), 0);
+
     if(read_bytes == -1) {
-        EERROR("failed to read window messages. Is the window still alive?");
+        EERROR("failed to read window messages. Is the display system still alive?");
         return false;
     }
 
-    char *msg = read_buf;
-    u64 msg_len = (u64)read_bytes;
+    u8 *msg = read_buf;
+    u64 msg_len = read_bytes;
 
     EDEBUG("received data: %u bytes", msg_len);
 
@@ -279,6 +353,8 @@ u8 ewindow_pump(ewindow *window) {
         msg += sizeof(u16); msg_len -= sizeof(u16);
         u16 size = *(u16 *)msg;
         msg += sizeof(u16); msg_len -= sizeof(u16);
+
+        // global events -- treated by display_state
 
         if(object_id == display_state.wl_registry && opcode == wayland_wl_registry_event_global) {
             u32 name = *(u32 *)msg;
@@ -318,6 +394,115 @@ u8 ewindow_pump(ewindow *window) {
                 wayland_wl_registry_bind(name, interface, interface_len, version, &display_state.wl_output);
             }
 
+            char wl_seat_interface[] = "wl_seat";
+            if(strcmp(wl_seat_interface, interface) == 0) {
+                wayland_wl_registry_bind(name, interface, interface_len, version, &display_state.wl_seat);
+                wayland_wl_seat_get_keyboard();
+            }
+
+            continue;
+        }
+
+        if(object_id == display_state.wl_seat && opcode == wayland_wl_seat_event_name) {
+            u32 size = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 padded_size = roundup4(size);
+            char name[255] = "";
+            memcpy(name, msg, padded_size);
+            msg += padded_size; msg_len -= padded_size;
+            EDEBUG("<- wl_seat@%u.name: name=%.*s", display_state.wl_seat, size, name);
+            continue;
+        }
+
+        if(object_id == display_state.wl_seat && opcode == wayland_wl_seat_event_capabilities) {
+            u32 capabilities = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            EDEBUG("<- wl_seat@%u.capabilities: capabilities=%u", display_state.wl_seat, capabilities);
+            continue;
+        }
+
+        if(object_id == display_state.wl_keyboard && opcode == wayland_wl_keyboard_event_keymap) {
+            u32 format = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 size = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            
+            // retrieve fd as ancillary data
+            struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msghdr);
+            EASSERT(cmsg->cmsg_level == SOL_SOCKET);
+            EASSERT(cmsg->cmsg_type == SCM_RIGHTS);
+            i32 fd = *(i32 *)CMSG_DATA(cmsg);
+
+            EDEBUG("<- wl_keyboard@%u.keymap: format=%u fd=%u size=%u", display_state.wl_keyboard, format, fd, size);
+            continue;
+        }
+
+        if(object_id == display_state.wl_keyboard && opcode == wayland_wl_keyboard_event_repeat_info) {
+            u32 rate = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 delay = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            EDEBUG("<- wl_keyboard@%u.repeat_info: rate=%u delay=%u", display_state.wl_keyboard, rate, delay);
+            continue;
+        }
+
+        if(object_id == display_state.wl_keyboard && opcode == wayland_wl_keyboard_event_enter) {
+            u32 serial = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 surface = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 len = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            char buf[256] = "";
+            EASSERT(len <= sizeof(buf));
+            memcpy(buf, msg, len);
+            msg += len; msg_len -= len;
+            EDEBUG("<- wl_keyboard@%u.enter: serial=%u surface=%u keys[%u]", display_state.wl_keyboard, serial, surface, len);
+            continue;
+        }
+
+        if(object_id == display_state.wl_keyboard && opcode == wayland_wl_keyboard_event_modifiers) {
+            u32 serial = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 mods_depressed = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 mods_latched = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 mods_locked = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 group = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            EDEBUG("<- wl_keyboard@%u.modifiers: serial=%u depressed=%u latched=%u locked=%u group=%u", display_state.wl_keyboard, serial, mods_depressed, mods_latched, mods_locked, group);
+            continue;
+        }
+
+        if(object_id == display_state.wl_keyboard && opcode == wayland_wl_keyboard_event_leave) {
+            u32 serial = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 surface = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            EDEBUG("<- wl_keyboard@%u.leave: serial=%u surface=%u", display_state.wl_keyboard, serial, surface);
+            continue;
+        }
+
+        if(object_id == display_state.wl_keyboard && opcode == wayland_wl_keyboard_event_key) {
+            u32 serial = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 time = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 key = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 state = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+
+            // TODO: tmp
+            if(state == 1 && key == 23) {
+                ewindow_config config = { .x = 0, .y = 0, .width = 600, .height = 400 };
+                u64 id;
+                ewindow_create(&config, &id);
+            }
+
+            EDEBUG("<- wl_keyboard@%u.key: serial=%u time=%u key=%u state=%u", display_state.wl_keyboard, serial, time, key, state);
             continue;
         }
 
@@ -325,11 +510,6 @@ u8 ewindow_pump(ewindow *window) {
             u32 format = *(u32 *)msg;
             msg += sizeof(u32); msg_len -= sizeof(u32);
             EDEBUG("<- wl_shm: format=%#x", format);
-            continue;
-        }
-
-        if(object_id == backend_state->wl_buffer && opcode == wayland_wl_buffer_event_release) {
-            EDEBUG("<- wl_buffer@%u.release", backend_state->wl_buffer);
             continue;
         }
 
@@ -341,102 +521,6 @@ u8 ewindow_pump(ewindow *window) {
             continue;
         }
 
-        if(window && object_id == backend_state->xdg_toplevel && opcode == wayland_xdg_toplevel_event_wm_capabilities) {
-            u32 len = *(u32 *)msg;
-            msg += sizeof(u32); msg_len -= sizeof(u32);
-            char buf[256] = "";
-            EASSERT(len <= sizeof(buf));
-            memcpy(buf, msg, len);
-            msg += len; msg_len -= len;
-            EDEBUG("<- xdg_toplevel@%u.wm_capabilities: capabilities[%u]", backend_state->xdg_toplevel, len);
-            continue;
-        }
-
-        if(window && object_id == backend_state->xdg_surface && opcode == wayland_xdg_surface_event_configure) {
-            u32 serial = *(u32 *)msg;
-            msg += sizeof(u32); msg_len -= sizeof(u32);
-
-            EDEBUG("<- xdg_surface@%u.configure: serial=%u", backend_state->xdg_surface, serial);
-
-            if((backend_state->width_req != 0 && backend_state->height_req != 0) 
-                    && (backend_state->width_req != backend_state->width || backend_state->height_req != backend_state->height)) {
-                // store old memory to free later
-                u32 i = 0;
-                while(display_state.old_memchunks[i].wl_object != 0) ++i;
-                EASSERT(i < sizeof(display_state.old_memchunks) / sizeof(memchunk));
-                memchunk *chunk = &display_state.old_memchunks[i];
-                chunk->wl_object = backend_state->wl_shm_pool;
-                chunk->wl_buffers[0] = backend_state->wl_buffer; // TODO: account for double buffering
-                chunk->fd = backend_state->shm_fd;
-                chunk->data = backend_state->shm_pool_data;
-                chunk->size = backend_state->shm_pool_size;
-
-                // send delete pool and buffer(s) requests if exist
-                // we will wait for delete_id event before freeing the actual memory
-                if(backend_state->wl_buffer > 0) {
-                    wayland_wl_buffer_destroy(backend_state);
-                }
-                if(backend_state->wl_shm_pool > 0) {
-                    wayland_wl_shm_pool_destroy(backend_state);
-                }
-
-                // update infos and allocate new memory
-                backend_state->width = backend_state->width_req;
-                backend_state->height = backend_state->height_req;
-                backend_state->shm_pool_size = backend_state->width * backend_state->height * color_channels;
-                window_alloc_memory(backend_state->shm_pool_size, (void *)&backend_state->shm_pool_data, &backend_state->shm_fd);
-            }
-
-            wayland_xdg_surface_ack_configure(backend_state, serial);
-
-            // pool and buffers will be recreated next iteration
-            display_state.state = STATE_SURFACE_ACKED_CONFIGURE;
-
-            continue;
-        }
-
-        if(object_id == backend_state->xdg_toplevel && opcode == wayland_xdg_toplevel_event_configure) {
-            u32 w = *(u32 *)msg;
-            msg += sizeof(u32); msg_len -= sizeof(u32);
-            u32 h = *(u32 *)msg;
-            msg += sizeof(u32); msg_len -= sizeof(u32);
-            u32 len = *(u32 *)msg;
-            msg += sizeof(u32); msg_len -= sizeof(u32);
-            char buf[256] = "";
-            EASSERT(len <= sizeof(buf));
-            memcpy(buf, msg, len);
-            msg += len; msg_len -= len;
-
-            if((w != 0 && h != 0) && (w != backend_state->width || h != backend_state->height)) {
-                // change dimensions, will reallocate memory when acking the configure event
-                backend_state->width_req = w;
-                backend_state->height_req = h;
-            }
-
-            EDEBUG("<- xdg_toplevel@%u.configure: w=%u h=%u states[%u]", backend_state->xdg_toplevel, w, h, len);
-            continue;
-        }
-
-        // if(object_id == display_state.wl_surface && opcode == wayland_wl_surface_event_preferred_buffer_scale) {
-        //     i32 factor = *(i32 *)msg;
-        //     msg += sizeof(i32); msg_len -= sizeof(i32);
-        //     EDEBUG("<- wl_surface@%u.preferred_buffer_scale: factor=%u", display_state.wl_surface, factor);
-        //     continue;
-        // }
-        //
-        // if(object_id == display_state.wl_surface && opcode == wayland_wl_surface_event_preferred_buffer_transform) {
-        //     u32 transform = *(u32 *)msg;
-        //     msg += sizeof(u32); msg_len -= sizeof(u32);
-        //     EDEBUG("<- wl_surface@%u.preferred_buffer_transform: transform=%u", display_state.wl_surface, transform);
-        //     continue;
-        // }
-
-        if(object_id == backend_state->xdg_toplevel && opcode == wayland_xdg_toplevel_event_close) {
-            EDEBUG("<- xdg_toplevel@%u.close", backend_state->xdg_toplevel);
-            display_state.state = STATE_SHOULD_CLOSE;
-            return true;
-        }
-
         if(object_id == display_state.wl_output && opcode == wayland_wl_output_event_name) {
             u32 size = *(u32 *)msg;
             msg += sizeof(u32); msg_len -= sizeof(u32);
@@ -445,14 +529,59 @@ u8 ewindow_pump(ewindow *window) {
             memcpy(name, msg, padded_size);
             msg += padded_size; msg_len -= padded_size;
             EDEBUG("<- wl_output@%u.name: name=%.*s", display_state.wl_output, size, name);
-            return true;
+            continue;
         }
 
-        if(object_id == backend_state->wl_surface && opcode == wayland_wl_surface_event_enter) {
-            u32 output = *(u32 *)msg;
+        if(object_id == display_state.wl_output && opcode == wayland_wl_output_event_description) {
+            u32 size = *(u32 *)msg;
             msg += sizeof(u32); msg_len -= sizeof(u32);
-            EDEBUG("<- wl_surface@%u.enter: output=%u", backend_state->wl_surface, output);
-            return true;
+            u32 padded_size = roundup4(size);
+            char description[255] = "";
+            memcpy(description, msg, padded_size);
+            msg += padded_size; msg_len -= padded_size;
+            EDEBUG("<- wl_output@%u.description: description=%.*s", display_state.wl_output, size, description);
+            continue;
+        }
+
+        if(object_id == display_state.wl_output && opcode == wayland_wl_output_event_scale) {
+            u32 scale = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            EDEBUG("<- wl_output@%u.scale: scale=%u", display_state.wl_output, scale);
+            continue;
+        }
+
+        if(object_id == display_state.wl_output && opcode == wayland_wl_output_event_geometry) {
+            u32 x = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 y = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 physical_width = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 physical_height = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 subpixel = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 make_size = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 make_padded_size = roundup4(make_size);
+            char make[255] = "";
+            memcpy(make, msg, make_padded_size);
+            msg += make_padded_size; msg_len -= make_padded_size;
+            u32 model_size = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            u32 model_padded_size = roundup4(model_size);
+            char model[255] = "";
+            memcpy(model, msg, model_padded_size);
+            msg += model_padded_size; msg_len -= model_padded_size;
+            u32 transform = *(u32 *)msg;
+            msg += sizeof(u32); msg_len -= sizeof(u32);
+            EDEBUG("<- wl_output@%u.geometry: x=%u y=%u physical_width=%u physical_height=%u subpixel=%u make=%.*s model=%.*s transform=%u", display_state.wl_output, x, y, physical_width, physical_height, subpixel, make_size, make, model_size, model, transform);
+            continue;
+        }
+
+        if(object_id == display_state.wl_output && opcode == wayland_wl_output_event_done) {
+            EDEBUG("<- wl_output@%u.done", display_state.wl_output);
+            continue;
         }
 
         if(object_id == display_state.wl_output && opcode == wayland_wl_output_event_mode) {
@@ -465,7 +594,7 @@ u8 ewindow_pump(ewindow *window) {
             u32 refresh = *(u32 *)msg;
             msg += sizeof(u32); msg_len -= sizeof(u32);
             EDEBUG("<- wl_output@%u.mode: flags=0x%x w=%u h=%u refresh=%u", display_state.wl_output, flags, width, height, refresh);
-            return true;
+            continue;
         }
 
         if(object_id == wayland_display_object_id && opcode == wayland_wl_display_event_delete_id) {
@@ -520,13 +649,148 @@ u8 ewindow_pump(ewindow *window) {
             }
         }
 
-        EFATAL("received unimplemented event: object_id=%u opcode=%u msg_len=%lu", object_id, opcode, msg_len);
+        // dispatch event to each window backend
+
+        u8 consumed = false;
+        darray_foreach(ewindow, window, &display_state.windows) {
+            // we will feed the event to one window, then pass
+            // it to the next ones if it has not been consumed 
+            if(ewindow_pump(window, object_id, opcode, &msg, &msg_len)) {
+                consumed = true;
+                break;
+            }
+        }
+        if(consumed) {
+            continue;
+        }
+
+        // event not consumed by any window
+
+        EFATAL("unimplemented Wayland event: object_id=%u opcode=%u", object_id, opcode);
         EASSERT(false);
         return false;
     }
 
+    // TODO: tmp
+    darray_foreach(ewindow, window, &display_state.windows) {
+        window_render(window->backend_state);
+    }
+
+    return true;
+}
+
+static u8 ewindow_pump(ewindow *window, u32 object_id, u16 opcode, u8 **msg, u64 *msg_len) {
+    EASSERT(window != 0);
+
+    window_backend_state *backend_state;
+    backend_state = window->backend_state;
+
+    if(object_id == backend_state->wl_buffer && opcode == wayland_wl_buffer_event_release) {
+        EDEBUG("<- wl_buffer@%u.release", backend_state->wl_buffer);
+        return true;
+    }
+
+    if(window && object_id == backend_state->xdg_toplevel && opcode == wayland_xdg_toplevel_event_wm_capabilities) {
+        u32 len = *(u32 *)(*msg);
+        *msg += sizeof(u32); *msg_len -= sizeof(u32);
+        char buf[256] = "";
+        EASSERT(len <= sizeof(buf));
+        memcpy(buf, *msg, len);
+        *msg += len; *msg_len -= len;
+        EDEBUG("<- xdg_toplevel@%u.wm_capabilities: capabilities[%u]", backend_state->xdg_toplevel, len);
+        return true;
+    }
+
+    if(window && object_id == backend_state->xdg_surface && opcode == wayland_xdg_surface_event_configure) {
+        u32 serial = *(u32 *)(*msg);
+        *msg += sizeof(u32); *msg_len -= sizeof(u32);
+
+        EDEBUG("<- xdg_surface@%u.configure: serial=%u", backend_state->xdg_surface, serial);
+
+        if((backend_state->width_req != 0 && backend_state->height_req != 0) 
+                && (backend_state->width_req != backend_state->width || backend_state->height_req != backend_state->height)) {
+            window_unbind_memory(backend_state);
+
+            // update infos and allocate new memory
+            backend_state->width = backend_state->width_req;
+            backend_state->height = backend_state->height_req;
+            backend_state->shm_pool_size = backend_state->width * backend_state->height * color_channels;
+            window_alloc_memory(backend_state->shm_pool_size, (void *)&backend_state->shm_pool_data, &backend_state->shm_fd);
+        }
+
+        wayland_xdg_surface_ack_configure(backend_state, serial);
+
+        // pool and buffers will be recreated next iteration
+        backend_state->state = WINDOW_STATE_SURFACE_ACKED_CONFIGURE;
+
+        return true;
+    }
+
+    if(object_id == backend_state->xdg_toplevel && opcode == wayland_xdg_toplevel_event_configure) {
+        u32 w = *(u32 *)(*msg);
+        *msg += sizeof(u32); *msg_len -= sizeof(u32);
+        u32 h = *(u32 *)(*msg);
+        *msg += sizeof(u32); *msg_len -= sizeof(u32);
+        u32 len = *(u32 *)(*msg);
+        *msg += sizeof(u32); *msg_len -= sizeof(u32);
+        char buf[256] = "";
+        EASSERT(len <= sizeof(buf));
+        memcpy(buf, *msg, len);
+        *msg += len; *msg_len -= len;
+
+        if((w != 0 && h != 0) && (w != backend_state->width || h != backend_state->height)) {
+            // change dimensions, will reallocate memory when acking the configure event
+            backend_state->width_req = w;
+            backend_state->height_req = h;
+        }
+
+        EDEBUG("<- xdg_toplevel@%u.configure: w=%u h=%u states[%u]", backend_state->xdg_toplevel, w, h, len);
+        return true;
+    }
+
+    if(object_id == backend_state->wl_surface && opcode == wayland_wl_surface_event_preferred_buffer_scale) {
+        i32 factor = *(i32 *)(*msg);
+        *msg += sizeof(i32); *msg_len -= sizeof(i32);
+        EDEBUG("<- wl_surface@%u.preferred_buffer_scale: factor=%u", backend_state->wl_surface, factor);
+        return true;
+    }
+
+    if(object_id == backend_state->wl_surface && opcode == wayland_wl_surface_event_preferred_buffer_transform) {
+        u32 transform = *(u32 *)(*msg);
+        *msg += sizeof(u32); *msg_len -= sizeof(u32);
+        EDEBUG("<- wl_surface@%u.preferred_buffer_transform: transform=%u", backend_state->wl_surface, transform);
+        return true;
+    }
+
+    if(object_id == backend_state->xdg_toplevel && opcode == wayland_xdg_toplevel_event_close) {
+        EDEBUG("<- xdg_toplevel@%u.close", backend_state->xdg_toplevel);
+        backend_state->state = WINDOW_STATE_SHOULD_CLOSE;
+        return true;
+    }
+
+    if(object_id == backend_state->wl_surface && opcode == wayland_wl_surface_event_enter) {
+        u32 output = *(u32 *)(*msg);
+        *msg += sizeof(u32); *msg_len -= sizeof(u32);
+        EDEBUG("<- wl_surface@%u.enter: output=%u", backend_state->wl_surface, output);
+        return true;
+    }
+
+    // message not consumed 
+    return false;
+}
+
+static ewindow *get_window(u64 window_id) {
+    darray_foreach(ewindow, window, &display_state.windows) {
+        if(window->id == window_id) {
+            return window;
+        }
+    }
+    return NULL;
+}
+
+static u8 window_render(window_backend_state *backend_state) {
     // TODO: per window state
-    if(display_state.state == STATE_SURFACE_ACKED_CONFIGURE) {
+    if(backend_state->state == WINDOW_STATE_SURFACE_ACKED_CONFIGURE) {
         EASSERT(backend_state->wl_surface > 0);
         EASSERT(backend_state->xdg_surface > 0);
         EASSERT(backend_state->xdg_toplevel > 0);
@@ -554,14 +818,17 @@ u8 ewindow_pump(ewindow *window) {
         wayland_wl_surface_attach(backend_state);
         wayland_wl_surface_commit(backend_state);
 
-        display_state.state = STATE_SURFACE_ATTACHED;
+        backend_state->state = WINDOW_STATE_SURFACE_ATTACHED;
     }
 
     return true;
 }
 
-u8 ewindow_should_close() {
-    return display_state.state == STATE_SHOULD_CLOSE;
+u8 ewindow_should_close(u64 window_id) {
+    ewindow *window = get_window(window_id);
+    EASSERT(window != NULL);
+
+    return window->backend_state->state == WINDOW_STATE_SHOULD_CLOSE;
 }
 
 static u8 window_alloc_memory(u32 size, void **shm_pool_data, i32 *shm_fd) {
@@ -602,6 +869,30 @@ static u8 window_unalloc_memory(u32 size, void *shm_pool_data, i32 shm_fd) {
     return true;
 }
 
+static u8 window_unbind_memory(window_backend_state *backend_state) {
+    // store old memory to free later
+    u32 i = 0;
+    while(display_state.old_memchunks[i].wl_object != 0) ++i;
+    EASSERT(i < sizeof(display_state.old_memchunks) / sizeof(memchunk));
+    memchunk *chunk = &display_state.old_memchunks[i];
+    chunk->wl_object = backend_state->wl_shm_pool;
+    chunk->wl_buffers[0] = backend_state->wl_buffer; // TODO: account for double buffering
+    chunk->fd = backend_state->shm_fd;
+    chunk->data = backend_state->shm_pool_data;
+    chunk->size = backend_state->shm_pool_size;
+
+    // send delete pool and buffer(s) requests if exist
+    // we will wait for delete_id event before freeing the actual memory
+    if(backend_state->wl_buffer > 0) {
+        wayland_wl_buffer_destroy(backend_state);
+    }
+    if(backend_state->wl_shm_pool > 0) {
+        wayland_wl_shm_pool_destroy(backend_state);
+    }
+
+    return true;
+}
+
 static u8 window_create_surface(window_backend_state *backend_state) {
     if(backend_state->wl_surface == 0) {
         // TODO: assert that display_backend is init
@@ -609,6 +900,18 @@ static u8 window_create_surface(window_backend_state *backend_state) {
         wayland_xdg_wm_base_get_xdg_surface(backend_state);
         wayland_xdg_surface_get_toplevel(backend_state);
         wayland_wl_surface_commit(backend_state);
+
+        return true;
+    }
+
+    return false;
+}
+
+static u8 window_destroy_surface(window_backend_state *backend_state) {
+    if(backend_state->wl_surface != 0) {
+        wayland_xdg_toplevel_destroy(backend_state);
+        wayland_xdg_surface_destroy(backend_state);
+        wayland_wl_surface_destroy(backend_state);
 
         return true;
     }
@@ -650,6 +953,35 @@ static u8 wayland_wl_registry_bind(u32 name, char *interface, u32 interface_len,
     *state_interface = display_state.current_id;
 
     EDEBUG("bound Wayland interface: -> wl_registry@%u.bind: name=%u interface=%.*s version=%u", display_state.wl_registry, name, interface_len, interface, version);
+
+    return true;
+}
+
+static u8 wayland_wl_seat_get_keyboard() {
+    EASSERT(display_state.wl_seat > 0);
+
+    u8 msg[128] = "";
+    u64 msg_idx = 0;
+
+    write_u32(msg, &msg_idx, display_state.wl_seat);
+
+    write_u16(msg, &msg_idx, wayland_wl_seat_get_keyboard_opcode);
+
+    u16 final_msg_size = wayland_header_size + sizeof(display_state.current_id);
+    EASSERT(roundup4(final_msg_size) == final_msg_size);
+
+    write_u16(msg, &msg_idx, final_msg_size);
+
+    write_u32(msg, &msg_idx, ++display_state.current_id);
+
+    if(msg_idx != send(display_state.fd, msg, final_msg_size, 0)) {
+        EERROR("failed to get keyboard from Wayland");
+        return false;
+    }
+
+    display_state.wl_keyboard = display_state.current_id;
+
+    EDEBUG("got keyboard: -> wl_seat@%u.get_keyboard: keyboard=%u", display_state.wl_seat, display_state.wl_keyboard);
 
     return true;
 }
@@ -1003,6 +1335,87 @@ static u8 wayland_wl_shm_pool_destroy(window_backend_state *backend_state) {
     EDEBUG("destroyed wl_shm_pool: -> wl_shm_pool@%u.destroy", backend_state->wl_shm_pool);
 
     backend_state->wl_shm_pool = 0;
+
+    return true;
+}
+
+static u8 wayland_xdg_toplevel_destroy(window_backend_state *backend_state) {
+    EASSERT(backend_state->xdg_toplevel > 0);
+
+    u8 msg[128] = "";
+    u64 msg_idx = 0;
+
+    write_u32(msg, &msg_idx, backend_state->xdg_toplevel);
+
+    write_u16(msg, &msg_idx, wayland_xdg_toplevel_destroy_opcode);
+
+    u16 final_msg_size = wayland_header_size;
+    EASSERT(roundup4(final_msg_size) == final_msg_size);
+
+    write_u16(msg, &msg_idx, final_msg_size);
+
+    if(msg_idx != send(display_state.fd, msg, final_msg_size, 0)) {
+        EERROR("failed to destroy xdg_toplevel");
+        return false;
+    }
+
+    EDEBUG("destroyed xdg_toplevel: -> xdg_toplevel@%u.destroy", backend_state->xdg_toplevel);
+
+    backend_state->xdg_toplevel = 0;
+
+    return true;
+}
+
+static u8 wayland_xdg_surface_destroy(window_backend_state *backend_state) {
+    EASSERT(backend_state->xdg_surface > 0);
+
+    u8 msg[128] = "";
+    u64 msg_idx = 0;
+
+    write_u32(msg, &msg_idx, backend_state->xdg_surface);
+
+    write_u16(msg, &msg_idx, wayland_xdg_surface_destroy_opcode);
+
+    u16 final_msg_size = wayland_header_size;
+    EASSERT(roundup4(final_msg_size) == final_msg_size);
+
+    write_u16(msg, &msg_idx, final_msg_size);
+
+    if(msg_idx != send(display_state.fd, msg, final_msg_size, 0)) {
+        EERROR("failed to destroy xdg_surface");
+        return false;
+    }
+
+    EDEBUG("destroyed xdg_surface: -> xdg_surface@%u.destroy", backend_state->xdg_surface);
+
+    backend_state->xdg_surface = 0;
+
+    return true;
+}
+
+static u8 wayland_wl_surface_destroy(window_backend_state *backend_state) {
+    EASSERT(backend_state->wl_surface > 0);
+
+    u8 msg[128] = "";
+    u64 msg_idx = 0;
+
+    write_u32(msg, &msg_idx, backend_state->wl_surface);
+
+    write_u16(msg, &msg_idx, wayland_wl_surface_destroy_opcode);
+
+    u16 final_msg_size = wayland_header_size;
+    EASSERT(roundup4(final_msg_size) == final_msg_size);
+
+    write_u16(msg, &msg_idx, final_msg_size);
+
+    if(msg_idx != send(display_state.fd, msg, final_msg_size, 0)) {
+        EERROR("failed to destroy wl_surface");
+        return false;
+    }
+
+    EDEBUG("destroyed wl_surface: -> wl_surface@%u.destroy", backend_state->wl_surface);
+
+    backend_state->wl_surface = 0;
 
     return true;
 }

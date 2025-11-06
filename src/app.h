@@ -5,7 +5,7 @@
 #include "window.h"
 
 typedef struct eapp {
-    ewindow window;
+    u64 window;
 
     u8 (*init)(struct eapp *app);
 

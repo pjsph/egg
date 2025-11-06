@@ -15,6 +15,7 @@ typedef struct ewindow_config {
 } ewindow_config;
 
 typedef struct ewindow {
+    u64 id;
     const char* title;
     u16 width;
     u16 height;
@@ -24,9 +25,9 @@ typedef struct ewindow {
 
 EAPI u8 display_backend_init(struct display_backend_state *state);
 
-EAPI u8 ewindow_create(ewindow_config *config, ewindow *window);
-EAPI u8 ewindow_should_close();
-EAPI u8 ewindow_pump(ewindow *window);
-EAPI u8 ewindow_destroy(ewindow *window);
+EAPI u8 ewindow_create(ewindow_config *config, u64 *window_id);
+EAPI u8 ewindow_should_close(u64 window_id);
+EAPI u8 ewindow_pump_all();
+EAPI u8 ewindow_destroy(u64 window_id);
 
 #endif // WINDOW_H

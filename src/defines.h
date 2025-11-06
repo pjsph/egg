@@ -19,6 +19,8 @@ typedef char i8;
 typedef short i16;
 typedef int i32;
 typedef long long i64;
+typedef float f32;
+typedef double f64;
 
 // TODO: check that types are at least of the expected size
 
