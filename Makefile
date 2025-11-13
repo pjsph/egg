@@ -64,7 +64,7 @@ else
 	EXT_LIBS := -lm -ldl -lpthread
 endif
 
-SRC_FILES := engine.c $(BACKEND)/$(DISPLAY_MANAGER)window.c logger.c #scene.c $(BACKEND)/renderer.c $(BACKEND)/asset.c
+SRC_FILES := engine.c $(BACKEND)/$(DISPLAY_MANAGER)window.c logger.c memlist.c #scene.c $(BACKEND)/renderer.c $(BACKEND)/asset.c
 OBJ_FILES := $(patsubst %.c,$(BUILD_DIR)/%.$(OBJ_EXT),$(notdir $(SRC_FILES)))
 
 all: $(BUILD_CMD)
@@ -94,7 +94,10 @@ linuxclean:
 gendb:
 	bear -- make
 
-.PHONY: clean all winenv winclean linuxclean gendb
+test:
+	gcc -g tests/main.c src/logger.c tests/llist.c src/memlist.c tests/memlist.c -o build/tests_main && build/tests_main
+
+.PHONY: clean all winenv winclean linuxclean gendb test
 
 build/test.exe: test.c src/entry.h
 	@call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" && cl test.c build/libegg.lib /Febuild/test.exe

@@ -1,6 +1,8 @@
 #ifndef ASSERT_H
 #define ASSERT_H
 
+#include "logger.h"
+
 #define dbg_break() __builtin_trap()
 
 #define EASSERT_MSG(expr, msg, ...)                                                             \
