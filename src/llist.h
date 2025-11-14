@@ -54,6 +54,19 @@
         }                                                                               \
     } while(0)
 
+// does not need to llist_get() the previous node
+#define llist_insert_after(ll, item, previous, Type)                                \
+    do {                                                                            \
+        EASSERT(previous != 0);                                                     \
+        void *node = malloc(sizeof(Type) + sizeof(void*));                          \
+        EASSERT_MSG(node != 0, "couldn't allocate more memory for linked list");    \
+        *(Type*)node = (item);                                                      \
+        void *next = llist_next_of(ll, previous);                                   \
+        llist_next_of(ll, previous) = node;                                         \
+        llist_next_of(ll, node) = next;                                             \
+        ++(ll)->count;                                                              \
+    } while(0)
+
 #define llist_remove(ll, idx)                                                                   \
     do {                                                                                        \
         EASSERT_MSG((idx) < (ll)->count, "Out of bound remove");                                \
@@ -68,6 +81,16 @@
             free(current);                                                                      \
             --(ll)->count;                                                                      \
         }                                                                                       \
+    } while(0)
+
+// does not need to llist_get() the previous node
+#define llist_remove_after(ll, previous)                            \
+    do {                                                            \
+        EASSERT(previous != 0);                                     \
+        void *current = llist_next_of(ll, previous);                \
+        llist_next_of(ll, previous) = llist_next_of(ll, current);   \
+        free(current);                                              \
+        --(ll)->count;                                              \
     } while(0)
 
 #define llist_get(ll, idx, out)                                                     \

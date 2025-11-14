@@ -31,10 +31,19 @@ u8 ememlist_allocate(ememlist *list, u64 size, u64 *offset) {
 
     llist_memlist *ll = (llist_memlist*)list;
 
+    ememlist_item *previous = 0;
     llist_foreach(ememlist_item, it, ll) {
         if(it->size == size) {
             *offset = it->offset;
-            llist_remove(ll, (u64)_idx);
+            // llist_remove(ll, (u64)_idx) would use another loop,
+            // instead, but do it by hand
+            if(previous == 0) {
+                llist_pop(ll);
+            } else {
+                llist_next_of(ll, previous) = llist_next_of(ll, it);
+                free(it);
+                --(ll)->count;
+            }
             return true;
         } else if(it->size > size) {
             *offset = it->offset;
@@ -42,6 +51,7 @@ u8 ememlist_allocate(ememlist *list, u64 size, u64 *offset) {
             it->offset += size;
             return true;
         }
+        previous = it;
     }
 
     EWARN("cannot allocate space, no block with enough space found. Requested: %llu, available: %llu", size, ememlist_free_space(list));
@@ -72,7 +82,7 @@ u8 ememlist_free(ememlist *list, u64 size, u64 offset) {
             if(next && next->offset == it->offset + it->size) {
                 // connects with the next node, merge with it too and delete it (expand left)
                 it->size += next->size;
-                llist_remove(ll, i + 1);
+                llist_remove_after(ll, it);
             }
             return true;
         }
@@ -82,7 +92,11 @@ u8 ememlist_free(ememlist *list, u64 size, u64 offset) {
         }
         if(it->offset > offset) {
             ememlist_item item = { .size = size, .offset = offset };
-            llist_insert(ll, item, i, ememlist_item);
+            if(previous == 0) {
+                llist_append(ll, item, ememlist_item);
+            } else {
+                llist_insert_after(ll, item, previous, ememlist_item);
+            }
 
             // check if it can be merged with next node
             ememlist_item *next = it;
@@ -96,19 +110,21 @@ u8 ememlist_free(ememlist *list, u64 size, u64 offset) {
             if(next->offset == it->offset + it->size) {
                 // connects with the next node, merge with it too and delete it (expand left)
                 it->size += next->size;
-                llist_remove(ll, i + 1);
+                // llist_remove(ll, i + 1);
+                llist_remove_after(ll, it);
             }
             // check if it can be merged with previous node
             if(previous && it->offset == previous->offset + previous->size) {
                 previous->size += it->size;
-                llist_remove(ll, i);
+                // llist_remove(ll, i);
+                llist_remove_after(ll, previous);
             }
             return true;
         }
         if(i + 1 >= ll->count && it->offset + it->size < offset) {
             // create a new node at the end
             ememlist_item item = { .size = size, .offset = offset };
-            llist_insert(ll, item, i + 1, ememlist_item);
+            llist_insert_after(ll, item, it, ememlist_item);
             return true;
         }
 
