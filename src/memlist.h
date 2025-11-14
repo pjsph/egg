@@ -3,11 +3,17 @@
 
 #include "defines.h"
 
-// tmp
-#define EMEMLIST_SIZE 16
+typedef struct ememlist_item {
+    u64 offset;
+    u64 size;
+} ememlist_item;
 
 typedef struct ememlist {
-    u8 internal[EMEMLIST_SIZE];
+    u64 count;
+    struct _memlist_node_t {
+        ememlist_item item;
+        struct _memlist_node_t *next;
+    } *head;
 } ememlist;
 
 void ememlist_create(u64 size, ememlist *out);

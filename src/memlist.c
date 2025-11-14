@@ -2,26 +2,13 @@
 
 #include "llist.h"
 
-typedef struct ememlist_item {
-    u64 offset;
-    u64 size;
-} ememlist_item;
-
-typedef struct llist_memlist {
-    u64 count;
-    struct memlist_node_t {
-        ememlist_item item;
-        struct memlist_node_t *next;
-    } *head;
-} llist_memlist;
-
 void ememlist_create(u64 size, ememlist *out) {
     ememlist_item item = { .offset = 0, .size = size };
-    llist_append((llist_memlist*)out, item, ememlist_item);
+    llist_append(out, item, ememlist_item);
 }
 
 void ememlist_destroy(ememlist *list) {
-    llist_free((llist_memlist*)list);
+    llist_free(list);
 }
 
 u8 ememlist_allocate(ememlist *list, u64 size, u64 *offset) {
@@ -29,20 +16,18 @@ u8 ememlist_allocate(ememlist *list, u64 size, u64 *offset) {
         return false;
     }
 
-    llist_memlist *ll = (llist_memlist*)list;
-
     ememlist_item *previous = 0;
-    llist_foreach(ememlist_item, it, ll) {
+    llist_foreach(ememlist_item, it, list) {
         if(it->size == size) {
             *offset = it->offset;
-            // llist_remove(ll, (u64)_idx) would use another loop,
+            // llist_remove(list, (u64)_idx) would use another loop,
             // instead, but do it by hand
             if(previous == 0) {
-                llist_pop(ll);
+                llist_pop(list);
             } else {
-                llist_next_of(ll, previous) = llist_next_of(ll, it);
+                llist_next_of(list, previous) = llist_next_of(list, it);
                 free(it);
-                --(ll)->count;
+                --(list)->count;
             }
             return true;
         } else if(it->size > size) {
@@ -63,26 +48,24 @@ u8 ememlist_free(ememlist *list, u64 size, u64 offset) {
         return false;
     }
 
-    llist_memlist *ll = (llist_memlist*)list;
-
-    if(ll->count == 0) {
+    if(list->count == 0) {
         ememlist_item item = { .size = size, .offset = offset };
-        llist_append(ll, item, ememlist_item);
+        llist_append(list, item, ememlist_item);
         return true;
     }
 
     u64 i = 0;
-    ememlist_item *it = &ll->head->item;
+    ememlist_item *it = &list->head->item;
     ememlist_item *previous = 0;
-    while(i < ll->count) {
+    while(i < list->count) {
         if(it->offset + it->size == offset) {
             // merge with left node (expand right)
             it->size += size;
-            ememlist_item *next = llist_next_of(ll, it);
+            ememlist_item *next = llist_next_of(list, it);
             if(next && next->offset == it->offset + it->size) {
                 // connects with the next node, merge with it too and delete it (expand left)
                 it->size += next->size;
-                llist_remove_after(ll, it);
+                llist_remove_after(list, it);
             }
             return true;
         }
@@ -93,9 +76,9 @@ u8 ememlist_free(ememlist *list, u64 size, u64 offset) {
         if(it->offset > offset) {
             ememlist_item item = { .size = size, .offset = offset };
             if(previous == 0) {
-                llist_append(ll, item, ememlist_item);
+                llist_append(list, item, ememlist_item);
             } else {
-                llist_insert_after(ll, item, previous, ememlist_item);
+                llist_insert_after(list, item, previous, ememlist_item);
             }
 
             // check if it can be merged with next node
@@ -103,33 +86,33 @@ u8 ememlist_free(ememlist *list, u64 size, u64 offset) {
             ememlist_item *it;
             if(previous == 0) {
                 // it is head
-                it = &ll->head->item;
+                it = &list->head->item;
             } else {
-                it = llist_next_of(ll, previous);
+                it = llist_next_of(list, previous);
             }
             if(next->offset == it->offset + it->size) {
                 // connects with the next node, merge with it too and delete it (expand left)
                 it->size += next->size;
-                // llist_remove(ll, i + 1);
-                llist_remove_after(ll, it);
+                // llist_remove(list, i + 1);
+                llist_remove_after(list, it);
             }
             // check if it can be merged with previous node
             if(previous && it->offset == previous->offset + previous->size) {
                 previous->size += it->size;
-                // llist_remove(ll, i);
-                llist_remove_after(ll, previous);
+                // llist_remove(list, i);
+                llist_remove_after(list, previous);
             }
             return true;
         }
-        if(i + 1 >= ll->count && it->offset + it->size < offset) {
+        if(i + 1 >= list->count && it->offset + it->size < offset) {
             // create a new node at the end
             ememlist_item item = { .size = size, .offset = offset };
-            llist_insert_after(ll, item, it, ememlist_item);
+            llist_insert_after(list, item, it, ememlist_item);
             return true;
         }
 
         previous = it;
-        it = llist_next_of(ll, it);
+        it = llist_next_of(list, it);
         ++i;
     }
 
@@ -142,14 +125,14 @@ u64 ememlist_free_space(ememlist *list) {
         return 0;
     }
     u64 space = 0;
-    llist_foreach(ememlist_item, it, (llist_memlist*)list) {
+    llist_foreach(ememlist_item, it, list) {
         space += it->size;
     }
     return space;
 }
 
 void ememlist_print(ememlist *list) {
-    llist_foreach(ememlist_item, it, (llist_memlist*)list) {
+    llist_foreach(ememlist_item, it, list) {
         EDEBUG("%llu) .offset = %llu, .size = %llu", (u64)_idx, it->offset, it->size);
     }
 }

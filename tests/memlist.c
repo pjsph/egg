@@ -7,7 +7,7 @@
 static void memlist_test_create() {
     ememlist list;
     ememlist_create(64, &list);
-    EASSERT(*(u64*)list.internal == 1);
+    EASSERT(list.count == 1);
     ememlist_destroy(&list);
 }
 
@@ -67,7 +67,7 @@ static void memlist_test_allocate_many() {
     EASSERT(remaining_space == 44);
 
     // count = 2
-    EASSERT(*(u64*)&list == 2);
+    EASSERT(list.count == 2);
 
     // will link to the right
     res = ememlist_free(&list, 4, offset3);
@@ -76,7 +76,7 @@ static void memlist_test_allocate_many() {
     EASSERT(remaining_space == 48);
 
     // count = 2 still
-    EASSERT(*(u64*)&list == 2);
+    EASSERT(list.count == 2);
 
     // will link to the left and right
     res = ememlist_free(&list, 16, offset2);
@@ -85,7 +85,7 @@ static void memlist_test_allocate_many() {
     EASSERT(remaining_space == 64);
 
     // count = 1
-    EASSERT(*(u64*)&list == 1);
+    EASSERT(list.count == 1);
 
     ememlist_destroy(&list);
 }
