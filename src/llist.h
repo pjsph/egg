@@ -11,14 +11,14 @@
  * }
  */
 
-#include <stdlib.h>
 #include "assert.h"
+#include "memory.h"
 
 #define llist_next_of(ll, node) *(void**)((u8*)(node) + sizeof(*(ll)->head) - sizeof(void*))
 
 #define llist_append(ll, item, Type)                                                \
     do {                                                                            \
-        void *node = malloc(sizeof(Type) + sizeof(void*));                          \
+        void *node = ealloc(sizeof(Type) + sizeof(void*));                          \
         EASSERT_MSG(node != 0, "couldn't allocate more memory for linked list");    \
         *(Type*)node = (item);                                                      \
         llist_next_of(ll, node) = (ll)->head;                                       \
@@ -30,7 +30,7 @@
     do {                                                                                \
         EASSERT((ll)->count > 0);                                                       \
         void *next = llist_next_of(ll, (ll)->head);                                     \
-        free((ll)->head);                                                               \
+        efree((ll)->head);                                                               \
         (ll)->head = next;                                                              \
         --(ll)->count;                                                                  \
     } while(0)
@@ -42,7 +42,7 @@
         if(idx == 0) {                                                                  \
             llist_append(ll, item, Type);                                               \
         } else {                                                                        \
-            void *node = malloc(sizeof(Type) + sizeof(void*));                          \
+            void *node = ealloc(sizeof(Type) + sizeof(void*));                          \
             EASSERT_MSG(node != 0, "couldn't allocate more memory for linked list");    \
             *(Type*)node = (item);                                                      \
             void *previous;                                                             \
@@ -58,7 +58,7 @@
 #define llist_insert_after(ll, item, previous, Type)                                \
     do {                                                                            \
         EASSERT(previous != 0);                                                     \
-        void *node = malloc(sizeof(Type) + sizeof(void*));                          \
+        void *node = ealloc(sizeof(Type) + sizeof(void*));                          \
         EASSERT_MSG(node != 0, "couldn't allocate more memory for linked list");    \
         *(Type*)node = (item);                                                      \
         void *next = llist_next_of(ll, previous);                                   \
@@ -78,7 +78,7 @@
             llist_get(ll, idx - 1, &previous);                                                  \
             void *current = llist_next_of(ll, previous);                                        \
             llist_next_of(ll, previous) = llist_next_of(ll, current);                           \
-            free(current);                                                                      \
+            efree(current);                                                                      \
             --(ll)->count;                                                                      \
         }                                                                                       \
     } while(0)
@@ -89,7 +89,7 @@
         EASSERT(previous != 0);                                     \
         void *current = llist_next_of(ll, previous);                \
         llist_next_of(ll, previous) = llist_next_of(ll, current);   \
-        free(current);                                              \
+        efree(current);                                              \
         --(ll)->count;                                              \
     } while(0)
 
@@ -111,7 +111,7 @@
         while(i++ < (ll)->count) {                          \
             current = (ll)->head;                           \
             (ll)->head = llist_next_of(ll, (ll)->head);     \
-            free(current);                                  \
+            efree(current);                                  \
         }                                                   \
         (ll)->count = 0;                                    \
         (ll)->head = 0;                                     \

@@ -2,11 +2,15 @@
 
 #include "window.h"
 #include "logger.h"
+#include "heap.h"
+#include "memory.h"
 
 #include <stdlib.h>
 #include <time.h>
+#include <sys/mman.h>
 
-// extern u32 display_backend_size;
+// tmp
+#define MEMORY_SIZE (1 * 1024 * 1024 * 1024)
 
 void engine_run(eapp *app) {
     EINFO("Hello from lib!");
@@ -14,7 +18,10 @@ void engine_run(eapp *app) {
     // init random system
     srand(time(NULL));
 
-    // struct display_backend_state *display_backend = malloc(display_backend_size);
+    // init memory system
+    eheap heap = {0};
+    ememory_init(MEMORY_SIZE, &heap);
+    ememory_report();
 
     if(!display_backend_init(0)) {
         EFATAL("ERROR: failed to initialize display system. Crashing");
@@ -24,13 +31,7 @@ void engine_run(eapp *app) {
     ewindow_config config = { .x = 100, .y = 100, .width = 600, .height = 400, .title = NULL };
     ewindow_create(&config, &app->window);
 
-    ewindow_config config2 = { .x = 100, .y = 100, .width = 600, .height = 400, .title = NULL };
-    u64 win_id;
-    ewindow_create(&config2, &win_id);
-
     app->init(app);
-
-    EDEBUG("here");
 
     while(!ewindow_should_close(app->window)) {
         ewindow_pump_all();
@@ -38,6 +39,9 @@ void engine_run(eapp *app) {
         app->render(app);
     }
 
+    // not pumped so memory is not cleaned
     ewindow_destroy(app->window);
-    ewindow_destroy(app->window);
+
+    ememory_report();
+    ememory_uninit();
 }

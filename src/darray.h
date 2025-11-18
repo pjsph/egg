@@ -1,8 +1,8 @@
 #ifndef DARRAY_H
 #define DARRAY_H
 
-#include <stdlib.h>
 #include "assert.h"
+#include "memory.h"
 
 #define DARRAY_INIT_CAP 256
 
@@ -19,8 +19,8 @@
             while((asked_capacity) > (da)->capacity) {                                              \
                 (da)->capacity *= 2;                                                                \
             }                                                                                       \
-            (da)->items = realloc((da)->items, (da)->capacity * sizeof(*(da)->items));              \
-            EASSERT_MSG((da)->items != NULL, "couldn't allocate more memory for dynamic array");    \
+            (da)->items = erealloc((da)->items, (da)->capacity * sizeof(*(da)->items));              \
+            EASSERT_MSG((da)->items != 0, "couldn't allocate more memory for dynamic array");    \
         }                                                                                           \
     } while(0)
 

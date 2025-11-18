@@ -4,6 +4,7 @@
 #include "../logger.h"
 #include "../assert.h"
 #include "../darray.h"
+#include "../memory.h"
 
 #include <limits.h>
 #include <stdlib.h>
@@ -271,7 +272,7 @@ u8 ewindow_create(ewindow_config *config, u64 *window_id) {
     ewindow *window = &darray_last(&display_state.windows);
     *window_id = window->id;
 
-    window->backend_state = malloc(sizeof(window_backend_state));
+    window->backend_state = ealloc(sizeof(window_backend_state));
     memset(window->backend_state, 0, sizeof(window_backend_state));
 
     window_backend_state *backend_state = window->backend_state;
@@ -304,7 +305,7 @@ u8 ewindow_destroy(u64 window_id) {
     window_unbind_memory(backend_state);
     window_destroy_surface(backend_state);
 
-    free(backend_state);
+    efree(backend_state);
 
     for(u32 i = 0; i < display_state.windows.count; ++i) {
         if(&display_state.windows.items[i] == window) {
@@ -851,7 +852,7 @@ static u8 window_alloc_memory(u32 size, void **shm_pool_data, i32 *shm_fd) {
         return false;
     }
 
-    void *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    void *data = emap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 
     EASSERT(data != (void *)-1);
     EASSERT(data != NULL);
@@ -863,12 +864,18 @@ static u8 window_alloc_memory(u32 size, void **shm_pool_data, i32 *shm_fd) {
 }
 
 static u8 window_unalloc_memory(u32 size, void *shm_pool_data, i32 shm_fd) {
-    munmap(shm_pool_data, size);
+    eunmap(shm_pool_data, size);
     close(shm_fd);
     return true;
 }
 
 static u8 window_unbind_memory(window_backend_state *backend_state) {
+    // if memory wasn't yet announced to the compositor, we can free immediately
+    if(backend_state->wl_shm_pool == 0) {
+        window_unalloc_memory(backend_state->shm_pool_size, backend_state->shm_pool_data, backend_state->shm_fd);
+        return true;
+    }
+
     // store old memory to free later
     u32 i = 0;
     while(display_state.old_memchunks[i].wl_object != 0) ++i;

@@ -26,7 +26,7 @@ u8 ememlist_allocate(ememlist *list, u64 size, u64 *offset) {
                 llist_pop(list);
             } else {
                 llist_next_of(list, previous) = llist_next_of(list, it);
-                free(it);
+                efree(it);
                 --(list)->count;
             }
             return true;

@@ -64,7 +64,7 @@ else
 	EXT_LIBS := -lm -ldl -lpthread
 endif
 
-SRC_FILES := engine.c $(BACKEND)/$(DISPLAY_MANAGER)window.c logger.c memlist.c #scene.c $(BACKEND)/renderer.c $(BACKEND)/asset.c
+SRC_FILES := engine.c $(BACKEND)/$(DISPLAY_MANAGER)window.c logger.c memlist.c heap.c memory.c $(BACKEND)/sysmem.c #scene.c $(BACKEND)/renderer.c $(BACKEND)/asset.c
 OBJ_FILES := $(patsubst %.c,$(BUILD_DIR)/%.$(OBJ_EXT),$(notdir $(SRC_FILES)))
 
 all: $(BUILD_CMD)
@@ -95,7 +95,7 @@ gendb:
 	bear -- make
 
 test:
-	gcc -g tests/main.c src/logger.c tests/llist.c src/memlist.c tests/memlist.c -o build/tests_main && build/tests_main
+	gcc -g tests/main.c src/logger.c tests/llist.c src/memlist.c tests/memlist.c src/heap.c tests/heap.c -o build/tests_main && build/tests_main
 
 .PHONY: clean all winenv winclean linuxclean gendb test
 
